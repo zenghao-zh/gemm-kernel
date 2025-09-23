@@ -22,11 +22,46 @@ import seaborn as sns
 import time
 import pandas as pd
 from typing import Tuple, Dict, List
-from gemm_kernel import matmul_w8a8, matmul_w4a4, matmul_w4a8
+from gemm_kernel import matmul_w8a8, matmul_w4a4, matmul_w4a8x4
+# from gemm_kernel_xjc import matmul_w4a8x4
+import random
 
 # Set style for better plots
 plt.style.use('seaborn-v0_8')
 sns.set_palette("husl")
+
+ini_seed = 42
+
+def reset_seed():
+    global ini_seed
+    """Reset random seed for reproducibility."""
+    torch.manual_seed(ini_seed)
+    torch.cuda.manual_seed(ini_seed)
+    torch.cuda.manual_seed_all(ini_seed)
+    ini_seed += 1
+
+
+# @torch.jit.script
+# def matmul_w4a8(A_4bit: torch.Tensor,A_8bit: torch.Tensor,W_4bit: torch.Tensor,W_8bit: torch.Tensor) -> torch.Tensor:
+#     C_kernel_4bit = torch.ops.my_ops.matmul_w4a4(A_4bit, W_4bit)
+#     # C_kernel_8bit = torch.ops.my_ops.matmul_w8a8(A_8bit, W_8bit)
+#     return C_kernel_4bit+1
+    
+# def matmul_w4a8(A_4bit, A_8bit, W_4bit, W_8bit):
+#     stream1 = torch.cuda.Stream()
+#     stream2 = torch.cuda.Stream()
+
+#     # 分别在两个 CUDA stream 上执行
+#     with torch.cuda.stream(stream1):
+#         C_kernel_4bit = matmul_w4a4(A_4bit, W_4bit)
+
+#     with torch.cuda.stream(stream2):
+#         C_kernel_8bit = matmul_w8a8(A_8bit, W_8bit)
+
+#     # 等待两个 stream 完成
+#     torch.cuda.synchronize()
+
+#     return C_kernel_4bit + C_kernel_8bit
 
 def create_4bit_tensor_correct(shape: Tuple[int, int]) -> torch.Tensor:
     """
@@ -53,6 +88,7 @@ def create_4bit_tensor_correct(shape: Tuple[int, int]) -> torch.Tensor:
     packed = (high_unsigned << 4) | (low_unsigned & 0x0F)
     
     return packed.cuda()
+
 
 def unpack_4bit_tensor(packed: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
@@ -86,6 +122,20 @@ def create_reference_4bit_tensor(packed_tensor: torch.Tensor, logical_K: int) ->
     result = torch.zeros(M, logical_K, dtype=torch.int8, device='cuda')
     result[:, 0::2] = low
     result[:, 1::2] = high
+    
+    return result
+
+def create_reference_revised_4bit_tensor(packed_tensor: torch.Tensor, logical_K: int) -> torch.Tensor:
+    """Create a full int8 tensor for reference computation from packed 4-bit."""
+    M, K_packed = packed_tensor.shape
+    assert logical_K == K_packed * 2, f"Logical K ({logical_K}) should be 2x packed K ({K_packed})"
+    
+    low, high = unpack_4bit_tensor(packed_tensor)
+    
+    # Interleave to get original order
+    result = torch.zeros(M, logical_K, dtype=torch.int8, device='cuda')
+    result[:, 0::2] = (low + 16) % 16 - 8
+    result[:, 1::2] = (high + 16) % 16 - 8
     
     return result
 
@@ -171,7 +221,9 @@ def accuracy_test(M: int, N: int, K: int) -> Dict[str, float]:
     
     try:
         # Test matmul_w8a8
+        reset_seed()
         A_8bit = torch.randint(-128, 128, (M, K), dtype=torch.int8, device='cuda')
+        reset_seed()
         B_8bit = torch.randint(-128, 128, (N, K), dtype=torch.int8, device='cuda')
         
         C_kernel = matmul_w8a8(A_8bit, B_8bit)
@@ -196,6 +248,7 @@ def accuracy_test(M: int, N: int, K: int) -> Dict[str, float]:
     
     try:
         # Test matmul_w4a4 (ensure K is even)
+        
         K_even = K if K % 2 == 0 else K + 1
         
         A_4bit = create_4bit_tensor_correct((M, K_even // 2))
@@ -222,17 +275,44 @@ def accuracy_test(M: int, N: int, K: int) -> Dict[str, float]:
     
     try:
         # Test matmul_w4a8 (ensure K is even)
-        K_even = K if K % 2 == 0 else K + 1
+
+        def accuracy_test_w4a8(M: int, N: int, K: int, S:float):
+            S = 0.75
+            K_even = K if K % 2 == 0 else K + 1
+            K1 = int(K_even*S)
+            K1_even = K1 if K1 % 2 == 0 else K1 + 1
+            K2_even = K_even - K1_even
+
+
+            A_K1_4bit = create_4bit_tensor_correct((M, K1_even // 2))
+            B_K1_4bit = create_4bit_tensor_correct((N, K1_even // 2))
+            A_K2_8bit = torch.randint(-128, 128, (M, K2_even), dtype=torch.int8, device='cuda')
+            B_K2_4bit = create_4bit_tensor_correct((N, K2_even // 2))
+
+            C_K1_kernel = matmul_w4a4(A_K1_4bit, B_K1_4bit)
+            B_K2_8bit = create_reference_4bit_tensor(B_K2_4bit, K2_even)
+            C_K2_kernel = matmul_w8a8(A_K2_8bit, B_K2_8bit)
+
+            C_kernel = matmul_w4a8x4(A_K2_8bit,B_K2_8bit,A_K1_4bit,B_K1_4bit)
+
+            A_K1_8bit = create_reference_4bit_tensor(A_K1_4bit, K1_even)
+            B_K1_8bit = create_reference_4bit_tensor(B_K1_4bit, K1_even)
+
+            def fp32_matmul(A_8bit,B_8bit):
+                A_32 = A_8bit.to(torch.float32)
+                B_32 = B_8bit.to(torch.float32)
+
+                # PyTorch reference 结果 (注意 B 需要转置)
+                C = torch.matmul(A_32, B_32.T)
+                return C
+
+            C_reference_K1 = fp32_matmul(A_K1_8bit,B_K1_8bit)
+            C_reference_K2 = fp32_matmul(A_K2_8bit,B_K2_8bit)
+            C_reference = C_reference_K1 + C_reference_K2
+
+            return C_kernel, C_reference
         
-        A_8bit_mixed = torch.randint(-128, 128, (M, K_even), dtype=torch.int8, device='cuda')
-        B_4bit_mixed = create_4bit_tensor_correct((N, K_even // 2))
-        
-        C_kernel = matmul_w4a8(A_8bit_mixed, B_4bit_mixed)
-        
-        # Reference: A (int8) × B (4bit converted to int8)
-        B_full = create_reference_4bit_tensor(B_4bit_mixed, K_even)
-        C_reference = pytorch_reference_matmul_int8(A_8bit_mixed, B_full)
-        
+        C_kernel, C_reference = accuracy_test_w4a8(M,N,K,0.5)
         abs_error = torch.abs(C_kernel - C_reference).float()
         max_error = abs_error.max().item()
         mean_error = abs_error.mean().item()
@@ -262,8 +342,15 @@ def performance_test(M: int, N: int, K: int) -> Dict[str, Dict]:
     
     # Test matmul_w8a8
     try:
-        A_8bit = torch.randint(-128, 128, (M, K), dtype=torch.int8, device='cuda')
-        B_8bit = torch.randint(-128, 128, (N, K), dtype=torch.int8, device='cuda')
+        K_even = K if K % 2 == 0 else K + 1
+        K_half = K_even // 2
+        K_half = K_half if K_half % 2 == 0 else K_half + 1
+        K_half = K_even
+
+        reset_seed()
+        A_8bit = torch.randint(-128, 128, (M, K_half), dtype=torch.int8, device='cuda')
+        reset_seed()
+        B_8bit = torch.randint(-128, 128, (N, K_half), dtype=torch.int8, device='cuda')
         
         time_ms = benchmark_kernel(matmul_w8a8, A_8bit, B_8bit)
         gflops = calculate_throughput_gflops(M, N, K, time_ms)
@@ -304,12 +391,20 @@ def performance_test(M: int, N: int, K: int) -> Dict[str, Dict]:
     
     # Test matmul_w4a8 (ensure K is even)  
     try:
+        S = 0.5
         K_even = K if K % 2 == 0 else K + 1
+        K1 = int(K_even*S)
+        K1_even = K1 if K1 % 2 == 0 else K1 + 1
+        K2_even = K_even - K1_even
         
-        A_8bit = torch.randint(-128, 128, (M, K_even), dtype=torch.int8, device='cuda')
-        B_4bit = create_4bit_tensor_correct((N, K_even // 2))
+        A_K1_4bit = create_4bit_tensor_correct((M, K1_even // 2))
+        B_K1_4bit = create_4bit_tensor_correct((N, K1_even // 2))
+        reset_seed()
+        A_K2_8bit = torch.randint(-128, 128, (M, K2_even), dtype=torch.int8, device='cuda')
+        B_K2_4bit = create_4bit_tensor_correct((N, K2_even // 2))
+        B_K2_8bit = create_reference_4bit_tensor(B_K2_4bit, K2_even)
         
-        time_ms = benchmark_kernel(matmul_w4a8, A_8bit, B_4bit)
+        time_ms = benchmark_kernel(matmul_w4a8x4, A_K2_8bit, B_K2_8bit, A_K1_4bit,  B_K1_4bit)
         gflops = calculate_throughput_gflops(M, N, K_even, time_ms)
         bandwidth = calculate_bandwidth_gb_s(M, N, K_even, time_ms, 8, 4)
         
@@ -334,17 +429,18 @@ def run_comprehensive_analysis():
     
     # Test matrix sizes
     test_sizes = [
-        (64, 64, 64),
-        (128, 128, 128), 
-        (256, 256, 256),
-        (512, 512, 512),
-        (768, 768, 768),
+        # (64, 64, 64),
+        # (128, 128, 128), 
+        # (256, 256, 256),
+        # (512, 512, 512),
+        # (768, 768, 768),
         (1024, 1024, 1024),
         (1536, 1536, 1536),
         (2048, 2048, 2048),
         (2560, 2560, 2560),
         (3072, 3072, 3072),
         (4096, 4096, 4096),
+        (512, 4096, 16384),
     ]
     
     # Store results
@@ -601,14 +697,21 @@ def print_summary_analysis(perf_results: List[Dict], acc_results: List[Dict]):
     print("\n🚀 PERFORMANCE SUMMARY:")
     print("-" * 40)
     
+    maxsize_gflops_list = []
+    maxsize_idx = 0
     for kernel in ['w8a8', 'w4a4', 'w4a8']:
         kernel_data = perf_df[perf_df['kernel'] == kernel]
         if not kernel_data.empty:
             avg_gflops = kernel_data['gflops'].mean()
             max_gflops = kernel_data['gflops'].max()
             avg_bandwidth = kernel_data['bandwidth_gb_s'].mean()
+            maxsize_gflops_list.append(kernel_data['gflops'][3*(kernel_data.shape[0]-1)+maxsize_idx])
+            maxsize_idx += 1
             
             print(f"{kernel.upper():<6}: Avg GFLOPS={avg_gflops:.1f}, Peak GFLOPS={max_gflops:.1f}, Avg BW={avg_bandwidth:.1f} GB/s")
+
+    maxsize_gflops_ratio = [x / maxsize_gflops_list[0] for x in maxsize_gflops_list]
+    print(f'maxsize_gflops_ratio w8a8:{maxsize_gflops_ratio[0]},w4a4:{maxsize_gflops_ratio[1]},w4a8:{maxsize_gflops_ratio[2]}')
     
     # Find best performers
     print("\n🏆 BEST PERFORMERS BY SIZE RANGE:")
@@ -667,8 +770,9 @@ if __name__ == "__main__":
     if not torch.cuda.is_available():
         print("❌ CUDA not available!")
         exit(1)
-        
     print(f"✅ Using GPU: {torch.cuda.get_device_name()}")
     print(f"✅ CUDA Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB\n")
-    
+    random.seed(ini_seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
     run_comprehensive_analysis() 

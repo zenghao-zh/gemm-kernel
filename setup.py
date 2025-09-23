@@ -56,9 +56,13 @@ if __name__ == '__main__':
                 sources=[
                     'kernels/src/bindings.cpp',
                     'kernels/src/gemm.cu',
+                    'kernels/src/fused_two_gemms_s8_sm80_shmem.cu',
                 ],
                 include_dirs=[
                     os.path.join(setup_dir, 'kernels/include'),
+                    os.path.join(setup_dir, 'kernels/device'),
+                    os.path.join(setup_dir, 'kernels/kernel'),
+                    os.path.join(setup_dir, 'kernels/reference/device'),
                     os.path.join(setup_dir, 'third-party/cutlass/include'),
                     os.path.join(setup_dir, 'third-party/cutlass/tools/util/include')
                 ],

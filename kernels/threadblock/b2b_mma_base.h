@@ -41,9 +41,6 @@
 #include "cutlass/gemm/gemm.h"
 #include "cutlass/matrix_shape.h"
 #include "cutlass/numeric_types.h"
-
-#include "cutlass/gemm/threadblock/mma_base.h"
-
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -52,23 +49,28 @@ namespace threadblock {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+////////////////////////////////////////////////////////////////////////////////
+
 /// Structure to compute the matrix product targeting CUDA cores and SIMT math
 /// instructions.
 template <
     /// Size of the Gemm problem - concept: gemm::GemmShape<>
-    typename Shape_,
+    typename Shape0_,
+    /// Size of the Gemm problem - concept: gemm::GemmShape<>
+    typename Shape1_,
     /// Policy describing tuning details (concept: MmaPolicy)
     typename Policy0_,
-    /// B1-specific version of the policy (concept: MmaPolicy)
+    /// Policy describing tuning details (concept: MmaPolicy)
     typename Policy1_,
     /// Number of stages,
     int Stages,
     /// Used for partial specialization
     typename Enable = bool>
-class DualMmaBase {
+class B2bMmaBase {
  public:
   ///< Size of the Gemm problem - concept: gemm::GemmShape<>
-  using Shape = Shape_;
+  using Shape0 = Shape0_;
+  using Shape1 = Shape1_;
 
   ///< Policy describing tuning details
   using Policy0 = Policy0_;
@@ -84,57 +86,60 @@ class DualMmaBase {
 
   /// Shape describing the overall GEMM computed from shared memory
   /// by each warp.
-  using WarpGemm = typename Policy0::Operator::Shape;
+  using WarpGemm0 = typename Policy0::Operator::Shape;
+  using WarpGemm1 = typename Policy1::Operator::Shape;
 
   /// Shape describing the number of warps filling the CTA
-  using WarpCount = GemmShape<Shape::kM / WarpGemm::kM,
-                              Shape::kN / WarpGemm::kN,
-                              Shape::kK / WarpGemm::kK>;
+  using WarpCount0 = GemmShape<Shape0::kM / WarpGemm0::kM,
+                               Shape0::kN / WarpGemm0::kN,
+                               Shape0::kK / WarpGemm0::kK>;
+  using WarpCount1 = GemmShape<Shape1::kM / WarpGemm1::kM,
+                               Shape1::kN / WarpGemm1::kN,
+                               Shape1::kK / WarpGemm1::kK>;
 
   /// Number of warp-level GEMM oeprations
-  static int const kWarpGemmIterations =
-      (WarpGemm::kK / Operator0::Policy::MmaShape::kK);
+  static int const kWarpGemmIterations0 =
+      (WarpGemm0::kK / Operator0::Policy::MmaShape::kK);
+  static int const kWarpGemmIterations1 =
+      (WarpGemm1::kK / Operator1::Policy::MmaShape::kK);
 
   /// Number of stages
   static int const kStages = Stages;
-
-  /// Tensor reference to the A operand
-  using TensorRefA = TensorRef<typename Operator0::ElementA, typename Operator0::LayoutA>;
-
-  /// Tensor reference to the B operand
-  using TensorRefB0 = TensorRef<typename Operator0::ElementB, typename Operator0::LayoutB>;
-  using TensorRefB1 = TensorRef<typename Operator1::ElementB, typename Operator1::LayoutB>;
-
-  static_assert(kWarpGemmIterations > 1,
-                "The pipelined structure requires at least two warp-level "
-                "GEMM operations.");
-
-  static_assert((kWarpGemmIterations % 2) == 0,
-                "Inner loop iteration must be an even number.");
 
   //
   // Nested structs
   //
 
   /// Shared storage object needed by threadblock-scoped GEMM
+  template<
+    typename Shape_,
+    typename Policy_
+  >
   class SharedStorage {
    public:
     //
     // Type definitions
     //
+    using Shape = Shape_;
+    using Policy = Policy_;
+    using Operator = typename Policy::Operator;
+
+    /// Tensor reference to the A operand
+    using TensorRefA = TensorRef<typename Operator::ElementA, typename Operator::LayoutA>;
+  
+    /// Tensor reference to the B operand
+    using TensorRefB = TensorRef<typename Operator::ElementB, typename Operator::LayoutB>;
+
 
     /// Shape of the A matrix operand in shared memory
-    using ShapeA = MatrixShape<Shape::kM + Policy0::SmemPaddingA::kRow,
+    using ShapeA = MatrixShape<Shape::kM + Policy::SmemPaddingA::kRow,
                                Shape::kK * kStages +
-                                   Policy0::SmemPaddingA::kColumn>;
+                                   Policy::SmemPaddingA::kColumn>;
 
     /// Shape of the B matrix operand in shared memory
-    using ShapeB0 =
-        MatrixShape<Shape::kK * kStages + Policy0::SmemPaddingB::kRow,
-                    Shape::kN + Policy0::SmemPaddingB::kColumn>;
-    using ShapeB1 =
-        MatrixShape<Shape::kK * kStages + Policy1::SmemPaddingB::kRow,
-                    Shape::kN + Policy1::SmemPaddingB::kColumn>;
+    using ShapeB =
+        MatrixShape<Shape::kK * kStages + Policy::SmemPaddingB::kRow,
+                    Shape::kN + Policy::SmemPaddingB::kColumn>;
 
    public:
     //
@@ -142,11 +147,10 @@ class DualMmaBase {
     //
 
     /// Buffer for A operand
-    AlignedBuffer<typename Operator0::ElementA, ShapeA::kCount> operand_A;
+    AlignedBuffer<typename Operator::ElementA, ShapeA::kCount> operand_A;
 
     /// Buffer for B operand
-    AlignedBuffer<typename Operator0::ElementB, ShapeB0::kCount> operand_B0;
-    AlignedBuffer<typename Operator1::ElementB, ShapeB1::kCount> operand_B1;
+    AlignedBuffer<typename Operator::ElementB, ShapeB::kCount> operand_B;
 
    public:
 
@@ -156,20 +160,14 @@ class DualMmaBase {
 
     /// Returns a layout object for the A matrix
     CUTLASS_DEVICE
-    static typename Operator0::LayoutA LayoutA() {
-      return Operator0::LayoutA::packed({ShapeA::kRow, ShapeA::kColumn});
+    static typename Operator::LayoutA LayoutA() {
+      return Operator::LayoutA::packed({ShapeA::kRow, ShapeA::kColumn});
     }
 
     /// Returns a layout object for the B matrix
     CUTLASS_HOST_DEVICE
-    static typename Operator0::LayoutB LayoutB0() {
-      return Operator0::LayoutB::packed({ShapeB0::kRow, ShapeB0::kColumn});
-    }
-
-    /// Returns a layout object for the B matrix
-    CUTLASS_HOST_DEVICE
-    static typename Operator1::LayoutB LayoutB1() {
-      return Operator1::LayoutB::packed({ShapeB1::kRow, ShapeB1::kColumn});
+    static typename Operator::LayoutB LayoutB() {
+      return Operator::LayoutB::packed({ShapeB::kRow, ShapeB::kColumn});
     }
 
     /// Returns a TensorRef to the A operand
@@ -180,14 +178,18 @@ class DualMmaBase {
 
     /// Returns a TensorRef to the B operand
     CUTLASS_HOST_DEVICE
-    TensorRefB0 operand_B0_ref() {
-      return TensorRefB0{operand_B0.data(), LayoutB0()};
-    }
-    CUTLASS_HOST_DEVICE
-    TensorRefB1 operand_B1_ref() {
-      return TensorRefB1{operand_B1.data(), LayoutB1()};
+    TensorRefB operand_B_ref() {
+      return TensorRefB{operand_B.data(), LayoutB()};
     }
   };
+
+  using SharedStorage0 = SharedStorage<Shape0, Policy0>;
+  using SharedStorage1 = SharedStorage<Shape1, Policy1>;
+  union B2bMmaSharedStorage {
+    SharedStorage0 shared_storage0;
+    SharedStorage1 shared_storage1;
+  };
+
 
  protected:
 
@@ -195,20 +197,22 @@ class DualMmaBase {
   // Data members
   //
 
-  /// Iterator to load a warp-scoped tile of A operand from shared memory
-  typename Operator0::IteratorA warp_tile_iterator_A_;
+  /// Iterator to load a warp-scoped tile of A0 operand from shared memory
+  typename Operator0::IteratorA warp_tile_iterator_A0_;
 
-  /// Iterator to load a warp-scoped tile of B operand from shared memory
+  /// Iterator to load a warp-scoped tile of B0 operand from shared memory
   typename Operator0::IteratorB warp_tile_iterator_B0_;
+
+  /// Iterator to load a warp-scoped tile of B1 operand from shared memory
   typename Operator1::IteratorB warp_tile_iterator_B1_;
 
 public:
 
   /// Construct from tensor references
   CUTLASS_DEVICE
-  DualMmaBase(
+  B2bMmaBase(
       ///< Shared storage needed for internal use by threadblock-scoped GEMM
-      SharedStorage &shared_storage,
+      B2bMmaSharedStorage &shared_storage,
       ///< ID within the threadblock
       int thread_idx,
       ///< ID of warp
@@ -216,9 +220,9 @@ public:
       ///< ID of each thread within a warp
       int lane_idx
     ):
-      warp_tile_iterator_A_(shared_storage.operand_A_ref(), lane_idx),
-      warp_tile_iterator_B0_(shared_storage.operand_B0_ref(), lane_idx),
-      warp_tile_iterator_B1_(shared_storage.operand_B1_ref(), lane_idx) {
+      warp_tile_iterator_A0_(shared_storage.shared_storage0.operand_A_ref(), lane_idx),
+      warp_tile_iterator_B0_(shared_storage.shared_storage0.operand_B_ref(), lane_idx),
+      warp_tile_iterator_B1_(shared_storage.shared_storage1.operand_B_ref(), lane_idx) {
 
   }
 };
