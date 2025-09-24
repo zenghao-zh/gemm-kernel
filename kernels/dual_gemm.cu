@@ -75,8 +75,8 @@ constexpr int kBatchCount = 37;
 // A0@B0 uses int8_t, A1@B1 uses int4b_t, both return INT32
 using ElementOperandA0 = int8_t;
 using ElementOperandB0 = int8_t;
-using ElementOperandA1 = cutlass::int4b_t;
-using ElementOperandB1 = cutlass::int4b_t;
+using ElementOperandA1 = int8_t;
+using ElementOperandB1 = int8_t;
 using ElementOutput = int32_t;
 using ElementAccumulator = int32_t;
 using ElementCompute = int32_t;
@@ -109,8 +109,7 @@ const ElementCompute beta1 = ElementCompute(kUseBias ? 1 : 0);
 bool run_nonfused_gemm_int8_int4_sm80() {
   using ThreadblockShape = cutlass::gemm::GemmShape<128, 128, 32>;
   using WarpShape = cutlass::gemm::GemmShape<64, 64, 32>;
-  using InstructionShapeInt8 = cutlass::gemm::GemmShape<16, 8, 16>;   // For int8
-  using InstructionShapeInt4 = cutlass::gemm::GemmShape<16, 8, 64>;   // For int4
+  using InstructionShape = cutlass::gemm::GemmShape<16, 8, 16>;   // For int8
 
   using Gemm0 = cutlass::gemm::device::Gemm<
     ElementOperandA0,
@@ -124,7 +123,7 @@ bool run_nonfused_gemm_int8_int4_sm80() {
     cutlass::arch::Sm80,
     ThreadblockShape,
     WarpShape,
-    InstructionShapeInt8,  // Use int8 instruction shape
+    InstructionShape,  // Use int8 instruction shape
     EpilogueOutputOp0,
     cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<1>,
     kStages,
@@ -144,7 +143,7 @@ bool run_nonfused_gemm_int8_int4_sm80() {
     cutlass::arch::Sm80,
     ThreadblockShape,
     WarpShape,
-    InstructionShapeInt4,  // Use int4 instruction shape
+    InstructionShape,  // Use int4 instruction shape
     EpilogueOutputOp1,
     cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<1>,
     kStages,
