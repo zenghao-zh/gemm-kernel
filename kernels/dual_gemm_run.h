@@ -484,7 +484,6 @@ struct DualFusedGemmRun
   using DualGemm = DualGemm_;
   using ElementAccumulator = typename DualGemm::ElementAccumulator;
   using ElementCompute = typename DualGemm::DualGemmKernel::Epilogue0::OutputOp::ElementCompute;
-  using EpilogueOutputOp2 = typename DualGemm::EpilogueOutputOp2;
 
   /// Initialization
   cutlass::Distribution::Kind init_A;
@@ -643,12 +642,7 @@ struct DualFusedGemmRun
           cutlass::MatrixCoord(batch_count * problem_size.m(), problem_size.n()) :
           cutlass::MatrixCoord(problem_size.m(), batch_count * problem_size.n()));
 
-    cutlass::HostTensor<
-      typename DualGemm::ElementC,
-      typename DualGemm::LayoutC> tensor_D2(
-        cutlass::platform::is_same<typename DualGemm::LayoutC, cutlass::layout::RowMajor>::value ?
-          cutlass::MatrixCoord(batch_count * problem_size.m(), problem_size.n()) :
-          cutlass::MatrixCoord(problem_size.m(), batch_count * problem_size.n()));
+
 
     cutlass::HostTensor<
       typename DualGemm::ElementC,
@@ -657,12 +651,7 @@ struct DualFusedGemmRun
           cutlass::MatrixCoord(batch_count * problem_size.m(), problem_size.n()) :
           cutlass::MatrixCoord(problem_size.m(), batch_count * problem_size.n()));
 
-    cutlass::HostTensor<
-      typename DualGemm::ElementC,
-      typename DualGemm::LayoutC> reference_D2(
-        cutlass::platform::is_same<typename DualGemm::LayoutC, cutlass::layout::RowMajor>::value ?
-          cutlass::MatrixCoord(batch_count * problem_size.m(), problem_size.n()) :
-          cutlass::MatrixCoord(problem_size.m(), batch_count * problem_size.n()));
+
 
     CHECK_TRUE(initialize_tensor(tensor_A0.host_view(), init_A, seed + 2019));
     CHECK_TRUE(initialize_tensor(tensor_B0.host_view(), init_B, seed + 2118));
@@ -676,14 +665,12 @@ struct DualFusedGemmRun
       tensor_D0.host_view());
     cutlass::reference::host::TensorFill(
       tensor_D1.host_view());
-    cutlass::reference::host::TensorFill(
-      tensor_D2.host_view());
+
     cutlass::reference::host::TensorFill(
       reference_D0.host_view());
     cutlass::reference::host::TensorFill(
       reference_D1.host_view());
-    cutlass::reference::host::TensorFill(
-      reference_D2.host_view());
+
 
     tensor_A0.sync_device();
     tensor_A1.sync_device();
@@ -695,10 +682,8 @@ struct DualFusedGemmRun
     tensor_Bias1.sync_device();
     tensor_D0.sync_device();
     tensor_D1.sync_device();
-    tensor_D2.sync_device();
     reference_D0.sync_device();
     reference_D1.sync_device();
-    reference_D2.sync_device();
 
     //
     // Batch strides (irrelevant when batch_count == 1)
@@ -743,10 +728,8 @@ struct DualFusedGemmRun
         tensor_B1.device_ref()),
       ref_B1,
       DualGemm::kStoreD1 ? tensor_D1.device_ref() : nullptr_ref,
-      tensor_D2.device_ref(),
       {alpha0, beta0},
       {alpha1, beta1},
-      {},
       split_k_slices,
       batch_count,
       batch_stride_A0,
@@ -803,7 +786,6 @@ struct DualFusedGemmRun
 
     tensor_D0.sync_host();
     tensor_D1.sync_host();
-    tensor_D2.sync_host();
 
     //
     // Verify
@@ -884,16 +866,13 @@ struct DualFusedGemmRun
        cutlass::reference::device::TensorReLu(reference_D1.device_view()); 
     }
 
-    TensorEpilogueForEach<EpilogueOutputOp2>(reference_D0.device_view(), reference_D1.device_view(), reference_D2.device_view());
+
     cudaDeviceSynchronize();
     reference_D0.sync_host();
     reference_D1.sync_host();
-    reference_D2.sync_host();
 
     CHECK_GT(cutlass::reference::host::TensorNorm(reference_D0.host_view()), 0);
     CHECK_GT(cutlass::reference::host::TensorNorm(reference_D1.host_view()), 0);
-    CHECK_GT(cutlass::reference::host::TensorNorm(tensor_D2.host_view()), 0);
-    CHECK_GT(cutlass::reference::host::TensorNorm(reference_D2.host_view()), 0);
 
     bool passed_out0 = true;
     if (DualGemm::kStoreD0) {
@@ -913,12 +892,7 @@ struct DualFusedGemmRun
     }
     CHECK_TRUE(passed_out1);
 
-    bool passed_out2 = cutlass::reference::host::TensorEquals(
-      reference_D2.host_view(), 
-      tensor_D2.host_view());
-    CHECK_TRUE(passed_out2);
-
-    bool passed = passed_out0 && passed_out1 && passed_out2;
+    bool passed = passed_out0 && passed_out1;
     if (!passed)
     {
       std::stringstream fname;
@@ -940,15 +914,11 @@ struct DualFusedGemmRun
         << "\n\nReference0 =\n" << reference_D0.host_view()
         << "\nComputed0 =\n" << tensor_D0.host_view()
         << "\n\nReference1 =\n" << reference_D1.host_view()
-        << "\nComputed1 =\n" << tensor_D1.host_view()
-        << "\n\nReference2 =\n" << reference_D2.host_view()
-        << "\nComputed2 =\n" << tensor_D2.host_view();
+        << "\nComputed1 =\n" << tensor_D1.host_view();
     }
     //std::cout << "A0 " << tensor_A0.host_view() << std::endl;
     // std::cout << "reference_D0 " << reference_D0.host_view() << std::endl;
     // std::cout << "reference_D1 " << reference_D1.host_view() << std::endl;
-    // std::cout << "reference_D2 " << reference_D2.host_view() << std::endl;
-    //std::cout << "reference_D0 " << reference_D0.host_view() << std::endl;
     return passed;
   }
 

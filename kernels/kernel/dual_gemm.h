@@ -56,7 +56,6 @@ template <
   typename DualMma_,               ///! Threadblock-scoped matrix multiply-accumulate 
   typename Epilogue0_,             ///! Epilogue
   typename Epilogue1_,             ///! Epilogue
-  typename OutputOp2_,             ///! Epilogue
   typename ThreadblockSwizzle_,   ///! Threadblock swizzling function
   bool SplitKSerial,              ///! If true, code supporting split-K via serial reduction is enabled.
   bool StoreD0,
@@ -70,7 +69,6 @@ struct DualGemm {
   using Epilogue1 = Epilogue1_;
   using OutputOp0 = typename Epilogue0::OutputOp;
   using OutputOp1 = typename Epilogue1::OutputOp;
-  using OutputOp2 = OutputOp2_;
   using ThreadblockSwizzle = ThreadblockSwizzle_;
   static constexpr bool kStoreD0 = StoreD0;
   static constexpr bool kStoreD1 = StoreD1;
@@ -85,7 +83,6 @@ struct DualGemm {
       typename Epilogue0::SharedLoadIterator,
       OutputOp0,
       OutputOp1,
-      OutputOp2,
       typename Epilogue0::Padding,
       kStoreD0,
       kStoreD1,
@@ -137,9 +134,7 @@ struct DualGemm {
     typename Epilogue1::OutputTileIterator::TensorRef ref_D1;
     typename OutputOp1::Params output_op_1;
 
-    typename Epilogue1::OutputTileIterator::Params params_D2;
-    typename Epilogue1::OutputTileIterator::TensorRef ref_D2;
-    typename OutputOp2::Params output_op_2;
+
 
     int *semaphore;
     int gemm_k_size;
@@ -173,11 +168,8 @@ struct DualGemm {
       typename DualMma::IteratorB1::TensorRef ref_B1,
       typename Epilogue1::OutputTileIterator::TensorRef ref_C1,
       typename Epilogue1::OutputTileIterator::TensorRef ref_D1,
-
-      typename Epilogue1::OutputTileIterator::TensorRef ref_D2,
       typename OutputOp0::Params output_op_0 = typename OutputOp0::Params(),
       typename OutputOp1::Params output_op_1 = typename OutputOp1::Params(),
-      typename OutputOp2::Params output_op_2 = typename OutputOp2::Params(),
       int *workspace = nullptr,
       int64_t batch_stride_A0 = 1,
       int64_t batch_stride_A1 = 1,
@@ -209,11 +201,8 @@ struct DualGemm {
       ref_C1(ref_C1),
       params_D1(ref_D1.layout()),
       ref_D1(ref_D1),
-      params_D2(ref_D2.layout()),
-      ref_D2(ref_D2),
       output_op_0(output_op_0),
       output_op_1(output_op_1),
-      output_op_2(output_op_2),
       batch_stride_A0(batch_stride_A0),
       batch_stride_A1(batch_stride_A1),
       batch_stride_B0(batch_stride_B0),
@@ -252,8 +241,7 @@ struct DualGemm {
       typename Epilogue0::OutputTileIterator::TensorRef ref_D0,
       typename DualMma::IteratorB1::TensorRef ref_B1,
       typename Epilogue1::OutputTileIterator::TensorRef ref_C1,
-      typename Epilogue1::OutputTileIterator::TensorRef ref_D1,
-      typename Epilogue1::OutputTileIterator::TensorRef ref_D2) {
+      typename Epilogue1::OutputTileIterator::TensorRef ref_D1) {
 
     static int const kAlignmentA0 = DualMma::IteratorA0::AccessType::kElements;
     static int const kAlignmentA1 = DualMma::IteratorA1::AccessType::kElements;
@@ -293,9 +281,7 @@ struct DualGemm {
       return Status::kErrorMisalignedOperand;
     }
 
-    if (!TensorRef_aligned(ref_D2, kAlignmentC)) {
-      return Status::kErrorMisalignedOperand;
-    }
+
 
     return Status::kSuccess;
   }
@@ -429,7 +415,6 @@ struct DualGemm {
 
     OutputOp0 output_op_0(params.output_op_0);
     OutputOp1 output_op_1(params.output_op_1);
-    OutputOp2 output_op_2(params.output_op_2);
 
     //
     // Masked tile iterators constructed from members
@@ -450,7 +435,7 @@ struct DualGemm {
     ElementC *ptr_C1 = static_cast<ElementC *>(params.ref_C1.data());
     ElementC *ptr_D0 = static_cast<ElementC *>(params.ref_D0.data());
     ElementC *ptr_D1 = static_cast<ElementC *>(params.ref_D1.data());
-    ElementC *ptr_D2 = static_cast<ElementC *>(params.ref_D2.data());
+
 
     // Construct the semaphore.
     Semaphore semaphore(params.semaphore + block_idx, thread_idx);
@@ -472,7 +457,7 @@ struct DualGemm {
       ptr_C1 += threadblock_tile_offset.k() * params.batch_stride_C;
       ptr_D0 += threadblock_tile_offset.k() * params.batch_stride_D;
       ptr_D1 += threadblock_tile_offset.k() * params.batch_stride_D;
-      ptr_D2 += threadblock_tile_offset.k() * params.batch_stride_D;
+
     }
 
     // Tile iterator loading from source tensor.
@@ -506,13 +491,7 @@ struct DualGemm {
       thread_idx,
       threadblock_offset
     );
-    typename Epilogue1::OutputTileIterator iterator_D2(
-      params.params_D2,
-      ptr_D2,
-      params.problem_size.mn(),
-      thread_idx,
-      threadblock_offset
-    );
+
 
     DualEpilogue epilogue(
       shared_storage.epilogue,
@@ -538,13 +517,11 @@ struct DualGemm {
     typename Epilogue0::OutputTileIterator source_iters[] = {
       iterator_C0, iterator_C1
     };
-    const bool writeToD2 = (!kSplitKSerial || params.grid_tiled_shape.k() == threadblock_tile_offset.k() + 1);
     epilogue(
-      output_op_0, output_op_1, output_op_2,
-      iterator_D0, iterator_D1, iterator_D2,
+      output_op_0, output_op_1,
+      iterator_D0, iterator_D1,
       accum0, accum1,
-      source_iters,
-      writeToD2
+      source_iters
     );
     
     //

@@ -37,8 +37,7 @@
 
 ```
 D0 = epilogue0(X @ B0, C0)
-D1 = epilogue1(X @ B1, C1)
-D2 = element_wise(D0, D1)
+D1 = epilogue1(X @ B1, D0)
 ```
     D0 and D1 will be optionally stored in gmem (`kStoreD0` / `kStoreD1`)
 */
@@ -104,12 +103,7 @@ using EpilogueOutputOp1 = cutlass::epilogue::thread::LinearCombination<
   ElementCompute,
   kScaleType
 >;
-using EpilogueOutputOp2 = cutlass::epilogue::thread::LeftSiLUAndMul<
-  ElementOutput,
-  128 / cutlass::sizeof_bits<ElementOutput>::value,
-  ElementOutput,
-  ElementCompute
->;
+
 
 const ElementCompute alpha0 = ElementCompute(1);
 const ElementCompute beta0 = ElementCompute(kUseBias ? 1 : 0);
@@ -183,32 +177,7 @@ bool run_nonfused_gemm_f16_sm80() {
   return pass;
 }
 
-template <typename T>
-struct LeftSiLUAndMul {
-  struct Params{};
-  CUTLASS_HOST_DEVICE LeftSiLUAndMul(Params p) {}
 
-  CUTLASS_HOST_DEVICE void set_k_partition(int, int) {}
-
-  CUTLASS_HOST_DEVICE T operator() (
-    T const &lhs, 
-    T const &rhs) const {
-    cutlass::epilogue::thread::SiLu<T> silu;
-    cutlass::multiplies<T> mul;
-    auto silu_lhs = silu(lhs);
-    return mul(silu_lhs, rhs);
-  }
-
-  template <int kCount>
-  CUTLASS_HOST_DEVICE cutlass::Array<T, kCount> operator() (
-    cutlass::Array<T, kCount> const &lhs, 
-    cutlass::Array<T, kCount> const &rhs) const {
-    cutlass::epilogue::thread::SiLu<T> silu;
-    cutlass::multiplies<T> mul;
-    auto silu_lhs = silu(lhs);
-    return mul(silu_lhs, rhs);
-  }
-};
 
 bool run_fused_gemm_f16_sm80_shmem() {
   using ThreadblockShape = cutlass::gemm::GemmShape<128, 64, 32>;
@@ -238,7 +207,6 @@ bool run_fused_gemm_f16_sm80_shmem() {
     InstructionShape,
     EpilogueOutputOp0,
     EpilogueOutputOp1,
-    EpilogueOutputOp2,
     cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<1>,
     kStages,
     kStoreD0,
@@ -294,7 +262,6 @@ bool run_batched_fused_gemm_f16_sm80_shmem() {
     InstructionShape,
     EpilogueOutputOp0,
     EpilogueOutputOp1,
-    EpilogueOutputOp2,
     cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<1>,
     kStages,
     kStoreD0,
@@ -353,7 +320,6 @@ bool run_broadcast_fused_gemm_f16_sm80_shmem() {
     InstructionShape,
     EpilogueOutputOp0,
     EpilogueOutputOp1,
-    EpilogueOutputOp2,
     cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<1>,
     kStages,
     kStoreD0,
@@ -412,7 +378,6 @@ bool run_batched_broadcast_fused_gemm_f16_sm80_shmem() {
     InstructionShape,
     EpilogueOutputOp0,
     EpilogueOutputOp1,
-    EpilogueOutputOp2,
     cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<1>,
     kStages,
     kStoreD0,

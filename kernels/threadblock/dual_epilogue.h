@@ -76,7 +76,6 @@ template <
   ///< Output operator
   typename OutputOp0_,
   typename OutputOp1_,
-  typename OutputOp2_,
   typename Padding_,                        ///< Padding added to SMEM allocation to avoid bank conflicts (concept: MatrixShape)
   bool StoreD0 = true,
   bool StoreD1 = true,
@@ -108,7 +107,6 @@ public:
   using SharedLoadIterator = SharedLoadIterator_;
   using OutputOp0 = OutputOp0_;
   using OutputOp1 = OutputOp1_;
-  using OutputOp2 = OutputOp2_;
   using Padding = Padding_;
 
   using Layout = layout::RowMajor;
@@ -230,14 +228,11 @@ public:
   void operator()(
     OutputOp0 const &output_op0,
     OutputOp1 const &output_op1,
-    OutputOp2 const &output_op2,
     OutputTileIterator dest0,
     OutputTileIterator dest1,
-    OutputTileIterator dest2,
     AccumulatorTile const &accumulator0,
     AccumulatorTile const &accumulator1,
-    OutputTileIterator source_iterator[2],
-    bool writeToD2 // true if it's the final split-k
+    OutputTileIterator source_iterator[2]
   ) {
     // TODO: Implement when no source is needed
 
@@ -316,10 +311,10 @@ public:
       // Compute the output result
       //
      
-      typename OutputTileIterator::Fragment output_fragment[3];
+      typename OutputTileIterator::Fragment output_fragment[2];
 
       apply_output_operator_(output_fragment,
-        output_op0, output_op1, output_op2,
+        output_op0, output_op1,
         aligned_accum_fragment0[0], aligned_accum_fragment1[0],
         source_fragment);
 
@@ -336,10 +331,7 @@ public:
         dest1.store(output_fragment[1]);
         ++dest1;
       }
-      if (writeToD2) {
-        dest2.store(output_fragment[2]);
-        ++dest2;
-      }
+      // D2 output removed - only storing D0 and D1
     }
   }
 
@@ -377,18 +369,16 @@ private:
   /// Helper to invoke the output functor over each vector of output
   CUTLASS_DEVICE
   void apply_output_operator_(
-    typename OutputTileIterator::Fragment (&output_fragment)[3],
+    typename OutputTileIterator::Fragment (&output_fragment)[2],
     OutputOp0 const &output_op0,
     OutputOp1 const &output_op1,
-    OutputOp2 const &output_op2,
     typename SharedLoadIterator::Fragment const& aligned_accum_fragment0,
     typename SharedLoadIterator::Fragment const& aligned_accum_fragment1,
     typename OutputTileIterator::Fragment const (&source_fragment)[2]) {
       
-    OutputAccessType* output_frag_ptr[3] = {
+    OutputAccessType* output_frag_ptr[2] = {
       reinterpret_cast<OutputAccessType *>(&output_fragment[0]),
-      reinterpret_cast<OutputAccessType *>(&output_fragment[1]),
-      reinterpret_cast<OutputAccessType *>(&output_fragment[2])
+      reinterpret_cast<OutputAccessType *>(&output_fragment[1])
     };
 
     AccumulatorAccessType const *compute_frag_ptr[2] = {
@@ -409,8 +399,9 @@ private:
 
       // Call the output operators
       output_frag_ptr[0][i] = output_op0(compute_frag_ptr[0][i], source_frag_ptr[0][i]);
-      output_frag_ptr[1][i] = output_op1(compute_frag_ptr[1][i], source_frag_ptr[1][i]);
-      output_frag_ptr[2][i] = output_op2(output_frag_ptr[0][i], output_frag_ptr[1][i]);
+      // Use D0 as bias for the second GEMM: D1 = A1 @ B1 + D0
+      output_frag_ptr[1][i] = output_op1(compute_frag_ptr[1][i], output_frag_ptr[0][i]);
+      // Removed output_op2 computation - directly return D1
     }
   }
 };
