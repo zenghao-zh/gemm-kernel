@@ -45,6 +45,7 @@ D1 = epilogue1(X @ B1, D0)
 #include <iostream>
 
 #include "cutlass/cutlass.h"
+#include "cutlass/numeric_types.h"
 #include "cutlass/gemm/device/gemm.h"
 
 #include "cutlass/util/host_tensor.h"
@@ -58,6 +59,7 @@ D1 = epilogue1(X @ B1, D0)
 #include "thread/left_silu_and_mul.h"
 #include "dual_gemm_run.h"
 #include "test_run.h"
+#include "cutlass/subbyte_reference.h"
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -70,20 +72,14 @@ constexpr bool kSplitKSerial = false;
 constexpr bool kUseBias = true;
 constexpr int kBatchCount = 37;
 
-
-#if 0
-using ElementOperandA = cutlass::bfloat16_t;
-using ElementOperandB = cutlass::bfloat16_t;
-using ElementOutput = cutlass::bfloat16_t;
-using ElementAccumulator = float;
-using ElementCompute = float;
-#else
-using ElementOperandA = cutlass::half_t;
-using ElementOperandB = cutlass::half_t;
-using ElementOutput = cutlass::half_t;
-using ElementAccumulator = cutlass::half_t;
-using ElementCompute = cutlass::half_t;
-#endif
+// A0@B0 uses int8_t, A1@B1 uses int4b_t, both return INT32
+using ElementOperandA0 = int8_t;
+using ElementOperandB0 = int8_t;
+using ElementOperandA1 = cutlass::int4b_t;
+using ElementOperandB1 = cutlass::int4b_t;
+using ElementOutput = int32_t;
+using ElementAccumulator = int32_t;
+using ElementCompute = int32_t;
 
 constexpr auto kScaleType = kUseBias ? cutlass::epilogue::thread::ScaleType::NoBetaScaling : (
   // No bias
@@ -110,15 +106,16 @@ const ElementCompute beta0 = ElementCompute(kUseBias ? 1 : 0);
 const ElementCompute alpha1 = ElementCompute(1);
 const ElementCompute beta1 = ElementCompute(kUseBias ? 1 : 0);
 
-bool run_nonfused_gemm_f16_sm80() {
+bool run_nonfused_gemm_int8_int4_sm80() {
   using ThreadblockShape = cutlass::gemm::GemmShape<128, 128, 32>;
   using WarpShape = cutlass::gemm::GemmShape<64, 64, 32>;
-  using InstructionShape = cutlass::gemm::GemmShape<16, 8, 16>;
+  using InstructionShapeInt8 = cutlass::gemm::GemmShape<16, 8, 16>;   // For int8
+  using InstructionShapeInt4 = cutlass::gemm::GemmShape<16, 8, 64>;   // For int4
 
   using Gemm0 = cutlass::gemm::device::Gemm<
-    ElementOperandA,
+    ElementOperandA0,
     cutlass::layout::RowMajor,
-    ElementOperandB,
+    ElementOperandB0,
     cutlass::layout::ColumnMajor,
     ElementOutput,
     cutlass::layout::RowMajor,
@@ -127,7 +124,7 @@ bool run_nonfused_gemm_f16_sm80() {
     cutlass::arch::Sm80,
     ThreadblockShape,
     WarpShape,
-    InstructionShape,
+    InstructionShapeInt8,  // Use int8 instruction shape
     EpilogueOutputOp0,
     cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<1>,
     kStages,
@@ -136,9 +133,9 @@ bool run_nonfused_gemm_f16_sm80() {
     kSplitKSerial
   >;
   using Gemm1 = cutlass::gemm::device::Gemm<
-    ElementOperandA,
+    ElementOperandA1,
     cutlass::layout::RowMajor,
-    ElementOperandB,
+    ElementOperandB1,
     cutlass::layout::ColumnMajor,
     ElementOutput,
     cutlass::layout::RowMajor,
@@ -147,7 +144,7 @@ bool run_nonfused_gemm_f16_sm80() {
     cutlass::arch::Sm80,
     ThreadblockShape,
     WarpShape,
-    InstructionShape,
+    InstructionShapeInt4,  // Use int4 instruction shape
     EpilogueOutputOp1,
     cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<1>,
     kStages,
@@ -158,7 +155,7 @@ bool run_nonfused_gemm_f16_sm80() {
 
   NonFusedDualGemmRun<Gemm0, Gemm1> nonFusedGemm;
 
-  std::cout << "Running Non-fused GEMMs FP16 TN GEMMs...\n";
+  std::cout << "Running Non-fused GEMMs INT8/INT4 TN GEMMs...\n";
 
   bool pass = nonFusedGemm.run(
     problem_size,
@@ -179,7 +176,7 @@ bool run_nonfused_gemm_f16_sm80() {
 
 
 
-bool run_fused_gemm_f16_sm80_shmem() {
+bool run_fused_gemm_int8_int4_sm80_shmem() {
   using ThreadblockShape = cutlass::gemm::GemmShape<128, 64, 32>;
   using WarpShape = cutlass::gemm::GemmShape<64, 32, 32>;
   using InstructionShape = cutlass::gemm::GemmShape<16, 8, 16>;
@@ -189,13 +186,13 @@ bool run_fused_gemm_f16_sm80_shmem() {
   constexpr bool kStoreD1 = true;
 
   using DualGemm = cutlass::gemm::device::DualGemm<
-    ElementOperandA,        // ElementA0
+    ElementOperandA0,        // ElementA0
     cutlass::layout::RowMajor,  // LayoutA0
-    ElementOperandA,        // ElementA1 
+    ElementOperandA1,        // ElementA1 
     cutlass::layout::RowMajor,  // LayoutA1
-    ElementOperandB,        // ElementB0
+    ElementOperandB0,        // ElementB0
     cutlass::layout::ColumnMajor,  // LayoutB0
-    ElementOperandB,        // ElementB1
+    ElementOperandB1,        // ElementB1
     cutlass::layout::ColumnMajor,  // LayoutB1
     ElementOutput,
     cutlass::layout::RowMajor,
@@ -216,7 +213,7 @@ bool run_fused_gemm_f16_sm80_shmem() {
 
   DualFusedGemmRun<DualGemm> fusedGemm;
 
-  std::cout << "Running Fused FP16 TN GEMMs + Epilogue2...\n";
+  std::cout << "Running Fused INT8/INT4 TN GEMMs + Epilogue2...\n";
 
   bool passed = fusedGemm.run(
     problem_size,
@@ -234,7 +231,7 @@ bool run_fused_gemm_f16_sm80_shmem() {
   return passed;
 }
 
-bool run_batched_fused_gemm_f16_sm80_shmem() {
+bool run_batched_fused_gemm_int8_int4_sm80_shmem() {
   using ThreadblockShape = cutlass::gemm::GemmShape<128, 64, 32>;
   using WarpShape = cutlass::gemm::GemmShape<64, 32, 32>;
   using InstructionShape = cutlass::gemm::GemmShape<16, 8, 16>;
@@ -244,13 +241,13 @@ bool run_batched_fused_gemm_f16_sm80_shmem() {
   constexpr bool kStoreD1 = true;
 
   using DualGemm = cutlass::gemm::device::DualGemm<
-    ElementOperandA,        // ElementA0
+    ElementOperandA0,        // ElementA0
     cutlass::layout::RowMajor,  // LayoutA0
-    ElementOperandA,        // ElementA1 
+    ElementOperandA1,        // ElementA1 
     cutlass::layout::RowMajor,  // LayoutA1
-    ElementOperandB,        // ElementB0
+    ElementOperandB0,        // ElementB0
     cutlass::layout::ColumnMajor,  // LayoutB0
-    ElementOperandB,        // ElementB1
+    ElementOperandB1,        // ElementB1
     cutlass::layout::ColumnMajor,  // LayoutB1
     ElementOutput,
     cutlass::layout::RowMajor,
@@ -271,7 +268,7 @@ bool run_batched_fused_gemm_f16_sm80_shmem() {
 
   DualFusedGemmRun<DualGemm> fusedGemm;
 
-  std::cout << "Running Batched Fused FP16 TN GEMMs + Epilogue2...\n";
+  std::cout << "Running Batched Fused INT8/INT4 TN GEMMs + Epilogue2...\n";
 
   bool passed = fusedGemm.run(
     batch_problem_size,
@@ -292,7 +289,7 @@ bool run_batched_fused_gemm_f16_sm80_shmem() {
   return passed;
 }
 
-bool run_broadcast_fused_gemm_f16_sm80_shmem() {
+bool run_broadcast_fused_gemm_int8_int4_sm80_shmem() {
   using ThreadblockShape = cutlass::gemm::GemmShape<128, 64, 32>;
   using WarpShape = cutlass::gemm::GemmShape<64, 32, 32>;
   using InstructionShape = cutlass::gemm::GemmShape<16, 8, 16>;
@@ -302,13 +299,13 @@ bool run_broadcast_fused_gemm_f16_sm80_shmem() {
   constexpr bool kStoreD1 = true;
 
   using DualGemm = cutlass::gemm::device::DualGemm<
-    ElementOperandA,        // ElementA0
+    ElementOperandA0,        // ElementA0
     cutlass::layout::RowMajor,  // LayoutA0
-    ElementOperandA,        // ElementA1 
+    ElementOperandA1,        // ElementA1 
     cutlass::layout::RowMajor,  // LayoutA1
-    ElementOperandB,        // ElementB0
+    ElementOperandB0,        // ElementB0
     cutlass::layout::RowMajor,  // LayoutB0 - different layouts
-    ElementOperandB,        // ElementB1
+    ElementOperandB1,        // ElementB1
     cutlass::layout::ColumnMajor,  // LayoutB1
     ElementOutput,
     cutlass::layout::RowMajor,
@@ -329,7 +326,7 @@ bool run_broadcast_fused_gemm_f16_sm80_shmem() {
 
   DualFusedGemmRun<DualGemm> fusedGemm;
 
-  std::cout << "Running Broadcast Fused FP16 TN GEMMs + Epilogue2...\n";
+  std::cout << "Running Broadcast Fused INT8/INT4 TN GEMMs + Epilogue2...\n";
 
   bool passed = fusedGemm.run(
     problem_size,
@@ -350,7 +347,7 @@ bool run_broadcast_fused_gemm_f16_sm80_shmem() {
   return passed;
 }
 
-bool run_batched_broadcast_fused_gemm_f16_sm80_shmem() {
+bool run_batched_broadcast_fused_gemm_int8_int4_sm80_shmem() {
   using ThreadblockShape = cutlass::gemm::GemmShape<128, 64, 32>;
   using WarpShape = cutlass::gemm::GemmShape<64, 32, 32>;
   using InstructionShape = cutlass::gemm::GemmShape<16, 8, 16>;
@@ -360,13 +357,13 @@ bool run_batched_broadcast_fused_gemm_f16_sm80_shmem() {
   constexpr bool kStoreD1 = true;
 
   using DualGemm = cutlass::gemm::device::DualGemm<
-    ElementOperandA,        // ElementA0
+    ElementOperandA0,        // ElementA0
     cutlass::layout::RowMajor,  // LayoutA0
-    ElementOperandA,        // ElementA1 
+    ElementOperandA1,        // ElementA1 
     cutlass::layout::RowMajor,  // LayoutA1
-    ElementOperandB,        // ElementB0
+    ElementOperandB0,        // ElementB0
     cutlass::layout::RowMajor,  // LayoutB0 - different layouts
-    ElementOperandB,        // ElementB1
+    ElementOperandB1,        // ElementB1
     cutlass::layout::ColumnMajor,  // LayoutB1
     ElementOutput,
     cutlass::layout::RowMajor,
@@ -387,7 +384,7 @@ bool run_batched_broadcast_fused_gemm_f16_sm80_shmem() {
 
   DualFusedGemmRun<DualGemm> fusedGemm;
 
-  std::cout << "Running Batch Broadcast Fused FP16 TN GEMMs + Epilogue2...\n";
+  std::cout << "Running Batch Broadcast Fused INT8/INT4 TN GEMMs + Epilogue2...\n";
 
   bool passed = fusedGemm.run(
     batch_problem_size,
@@ -411,15 +408,15 @@ bool run_batched_broadcast_fused_gemm_f16_sm80_shmem() {
 int main() {
 
   std::vector<bool (*)()>funcs = {
-    &run_nonfused_gemm_f16_sm80,
-    &run_fused_gemm_f16_sm80_shmem,
-    &run_batched_fused_gemm_f16_sm80_shmem,
-    &run_broadcast_fused_gemm_f16_sm80_shmem,
-    &run_batched_broadcast_fused_gemm_f16_sm80_shmem
+    &run_nonfused_gemm_int8_int4_sm80,
+    &run_fused_gemm_int8_int4_sm80_shmem,
+    &run_batched_fused_gemm_int8_int4_sm80_shmem,
+    &run_broadcast_fused_gemm_int8_int4_sm80_shmem,
+    &run_batched_broadcast_fused_gemm_int8_int4_sm80_shmem
   };
 
   std::string test_name = (
-    "dual-gemm f16 bias=" +
+    "dual-gemm int8/int4 bias=" +
     std::to_string(kUseBias) +
     " split_k_serial=" +
     std::to_string(kSplitKSerial) +

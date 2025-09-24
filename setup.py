@@ -55,6 +55,7 @@ if __name__ == '__main__':
                 name='gemm_kernel',
                 sources=[
                     'kernels/dual_gemm.cu',
+                    'kernels/gemm.cu'
                 ],
                 include_dirs=[
                     os.path.join(setup_dir, 'kernels/device'),

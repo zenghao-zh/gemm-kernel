@@ -703,7 +703,9 @@ public:
     if (platform::is_same<typename Operator0::MathOperator,
                           arch::OpMultiplyAddFastF32>::value
       || platform::is_same<typename Operator0::MathOperator,
-                           arch::OpMultiplyAddComplexFastF32>::value) {
+                           arch::OpMultiplyAddComplexFastF32>::value
+      || platform::is_same<typename Operator0::MathOperator,
+                           arch::OpMultiplyAddSaturate>::value) {
 
       tmp_accum0.clear();
       tmp_accum1.clear();
@@ -757,7 +759,9 @@ public:
         if (platform::is_same<typename Operator0::MathOperator,
                               arch::OpMultiplyAddFastF32>::value
           || platform::is_same<typename Operator0::MathOperator,
-                               arch::OpMultiplyAddComplexFastF32>::value) {
+                               arch::OpMultiplyAddComplexFastF32>::value
+          || platform::is_same<typename Operator0::MathOperator,
+                               arch::OpMultiplyAddSaturate>::value) {
 
           warp_mma0(
             tmp_accum0,
@@ -890,7 +894,9 @@ public:
     if (platform::is_same<typename Operator0::MathOperator,
                           arch::OpMultiplyAddFastF32>::value
       || platform::is_same<typename Operator0::MathOperator,
-                           arch::OpMultiplyAddComplexFastF32>::value) {
+                           arch::OpMultiplyAddComplexFastF32>::value
+      || platform::is_same<typename Operator0::MathOperator,
+                           arch::OpMultiplyAddSaturate>::value) {
       accum0 = plus_accum(accum0, tmp_accum0); 
       accum1 = plus_accum(accum1, tmp_accum1); 
     }
