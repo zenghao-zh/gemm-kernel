@@ -171,9 +171,13 @@ public:
     static int const AsyncCopyIterationsPerStageA1 =
         IteratorA1::ThreadMap::Iterations::kCount;
 
-    /// Number of cp.async instructions to load one stage of operand B
-    static int const AsyncCopyIterationsPerStageB =
+    /// Number of cp.async instructions to load one stage of operand B0
+    static int const AsyncCopyIterationsPerStageB0 =
         IteratorB0::ThreadMap::Iterations::kCount;
+
+    /// Number of cp.async instructions to load one stage of operand B1
+    static int const AsyncCopyIterationsPerStageB1 =
+        IteratorB1::ThreadMap::Iterations::kCount;
 
     /// Number of stages
     static int const kStages = Stages;
@@ -186,9 +190,13 @@ public:
     static int const kAccessesPerGroupA1 =
         (AsyncCopyIterationsPerStageA1 + Base::kWarpGemmIterations - 1) / Base::kWarpGemmIterations;
 
-    /// Number of cp.async instructions to load on group of operand B
-    static int const kAccessesPerGroupB =
-        (AsyncCopyIterationsPerStageB + Base::kWarpGemmIterations - 1) / Base::kWarpGemmIterations;
+    /// Number of cp.async instructions to load on group of operand B0
+    static int const kAccessesPerGroupB0 =
+        (AsyncCopyIterationsPerStageB0 + Base::kWarpGemmIterations - 1) / Base::kWarpGemmIterations;
+
+    /// Number of cp.async instructions to load on group of operand B1
+    static int const kAccessesPerGroupB1 =
+        (AsyncCopyIterationsPerStageB1 + Base::kWarpGemmIterations - 1) / Base::kWarpGemmIterations;
   };
 
  private:
@@ -263,18 +271,18 @@ public:
 
   CUTLASS_DEVICE
   void copy_tiles_and_advance(IteratorA0 &iterator_A0, IteratorA1 &iterator_A1, IteratorB0 &iterator_B0, IteratorB1 &iterator_B1,
-                              int group_start_A = 0, int group_start_B = 0) {
-    iterator_A0.set_iteration_index(group_start_A *
+                              int group_start_A0 = 0, int group_start_A1 = 0, int group_start_B0 = 0, int group_start_B1 = 0) {
+    iterator_A0.set_iteration_index(group_start_A0 *
                                    IteratorA0::kAccessesPerVector);
-    iterator_A1.set_iteration_index(group_start_A *
+    iterator_A1.set_iteration_index(group_start_A1 *
                                    IteratorA1::kAccessesPerVector);
-    this->smem_iterator_A0_.set_iteration_index(group_start_A);
-    this->smem_iterator_A1_.set_iteration_index(group_start_A);
+    this->smem_iterator_A0_.set_iteration_index(group_start_A0);
+    this->smem_iterator_A1_.set_iteration_index(group_start_A1);
 
     // Async Copy for operand A0
     CUTLASS_PRAGMA_UNROLL
     for (int j = 0; j < Detail::kAccessesPerGroupA0; ++j) {
-      if (group_start_A + j < Detail::AsyncCopyIterationsPerStageA0) {
+      if (group_start_A0 + j < Detail::AsyncCopyIterationsPerStageA0) {
         typename IteratorA0::AccessType *dst_ptr =
             reinterpret_cast<typename IteratorA0::AccessType *>(
                 this->smem_iterator_A0_.get());
@@ -305,7 +313,7 @@ public:
     // Async Copy for operand A1
     CUTLASS_PRAGMA_UNROLL
     for (int j = 0; j < Detail::kAccessesPerGroupA1; ++j) {
-      if (group_start_A + j < Detail::AsyncCopyIterationsPerStageA1) {
+      if (group_start_A1 + j < Detail::AsyncCopyIterationsPerStageA1) {
         typename IteratorA1::AccessType *dst_ptr =
             reinterpret_cast<typename IteratorA1::AccessType *>(
                 this->smem_iterator_A1_.get());
@@ -333,17 +341,17 @@ public:
       }
     }
 
-    iterator_B0.set_iteration_index(group_start_B *
+    iterator_B0.set_iteration_index(group_start_B0 *
                                    IteratorB0::kAccessesPerVector);
-    iterator_B1.set_iteration_index(group_start_B *
+    iterator_B1.set_iteration_index(group_start_B1 *
                                    IteratorB1::kAccessesPerVector);
-    this->smem_iterator_B0_.set_iteration_index(group_start_B);
-    this->smem_iterator_B1_.set_iteration_index(group_start_B);
+    this->smem_iterator_B0_.set_iteration_index(group_start_B0);
+    this->smem_iterator_B1_.set_iteration_index(group_start_B1);
 
     // Async Copy for operand B0
     CUTLASS_PRAGMA_UNROLL
-    for (int j = 0; j < Detail::kAccessesPerGroupB; ++j) {
-      if (group_start_B + j < Detail::AsyncCopyIterationsPerStageB) {
+    for (int j = 0; j < Detail::kAccessesPerGroupB0; ++j) {
+      if (group_start_B0 + j < Detail::AsyncCopyIterationsPerStageB0) {
         typename IteratorB0::AccessType *dst_ptr =
             reinterpret_cast<typename IteratorB0::AccessType *>(
                 this->smem_iterator_B0_.get());
@@ -371,8 +379,8 @@ public:
     }
     // Async Copy for operand B1
     CUTLASS_PRAGMA_UNROLL
-    for (int j = 0; j < Detail::kAccessesPerGroupB; ++j) {
-      if (group_start_B + j < Detail::AsyncCopyIterationsPerStageB) {
+    for (int j = 0; j < Detail::kAccessesPerGroupB1; ++j) {
+      if (group_start_B1 + j < Detail::AsyncCopyIterationsPerStageB1) {
         typename IteratorB1::AccessType *dst_ptr =
             reinterpret_cast<typename IteratorB1::AccessType *>(
                 this->smem_iterator_B1_.get());
@@ -496,7 +504,7 @@ public:
 
       // Async Copy for operand B0
       CUTLASS_PRAGMA_UNROLL
-      for (int j = 0; j < Detail::AsyncCopyIterationsPerStageB; ++j) {
+      for (int j = 0; j < Detail::AsyncCopyIterationsPerStageB0; ++j) {
         typename IteratorB0::AccessType *dst_ptr =
             reinterpret_cast<typename IteratorB0::AccessType *>(
                 this->smem_iterator_B0_.get());
@@ -518,7 +526,7 @@ public:
       }
       // Async Copy for operand B1
       CUTLASS_PRAGMA_UNROLL
-      for (int j = 0; j < Detail::AsyncCopyIterationsPerStageB; ++j) {
+      for (int j = 0; j < Detail::AsyncCopyIterationsPerStageB1; ++j) {
         typename IteratorB1::AccessType *dst_ptr =
             reinterpret_cast<typename IteratorB1::AccessType *>(
                 this->smem_iterator_B1_.get());
@@ -616,7 +624,7 @@ public:
 
       // Async Copy for operand B0
       CUTLASS_PRAGMA_UNROLL
-      for (int j = 0; j < Detail::AsyncCopyIterationsPerStageB; ++j) {
+      for (int j = 0; j < Detail::AsyncCopyIterationsPerStageB0; ++j) {
         typename IteratorB0::AccessType *dst_ptr =
             reinterpret_cast<typename IteratorB0::AccessType *>(
                 last_smem_iterator_B0.get());
@@ -635,7 +643,7 @@ public:
 
       // Async Copy for operand B1
       CUTLASS_PRAGMA_UNROLL
-      for (int j = 0; j < Detail::AsyncCopyIterationsPerStageB; ++j) {
+      for (int j = 0; j < Detail::AsyncCopyIterationsPerStageB1; ++j) {
 
         typename IteratorB1::AccessType *dst_ptr =
             reinterpret_cast<typename IteratorB1::AccessType *>(
@@ -799,24 +807,28 @@ public:
 
         // Issue global->shared copies for the this stage
         if (warp_mma_k < Base::kWarpGemmIterations - 1) {
-          int group_start_iteration_A, group_start_iteration_B;
+          int group_start_iteration_A0, group_start_iteration_A1, group_start_iteration_B0, group_start_iteration_B1;
 
-          group_start_iteration_A = warp_mma_k * Detail::kAccessesPerGroupA0;
-          group_start_iteration_B = warp_mma_k * Detail::kAccessesPerGroupB;
+          group_start_iteration_A0 = warp_mma_k * Detail::kAccessesPerGroupA0;
+          group_start_iteration_A1 = warp_mma_k * Detail::kAccessesPerGroupA1;
+          group_start_iteration_B0 = warp_mma_k * Detail::kAccessesPerGroupB0;
+          group_start_iteration_B1 = warp_mma_k * Detail::kAccessesPerGroupB1;
 
-          copy_tiles_and_advance(iterator_A0, iterator_A1, iterator_B0, iterator_B1, group_start_iteration_A, 
-                               group_start_iteration_B);
+          copy_tiles_and_advance(iterator_A0, iterator_A1, iterator_B0, iterator_B1, group_start_iteration_A0, group_start_iteration_A1, group_start_iteration_B0, group_start_iteration_B1);
         }
 
         if (warp_mma_k + 2 == Base::kWarpGemmIterations) {
-          int group_start_iteration_A, group_start_iteration_B;
-          group_start_iteration_A =
+          int group_start_iteration_A0, group_start_iteration_A1, group_start_iteration_B0, group_start_iteration_B1;
+          group_start_iteration_A0 =
               (warp_mma_k + 1) * Detail::kAccessesPerGroupA0;
-          group_start_iteration_B =
-              (warp_mma_k + 1) * Detail::kAccessesPerGroupB;
+          group_start_iteration_A1 =
+              (warp_mma_k + 1) * Detail::kAccessesPerGroupA1;
+          group_start_iteration_B0 =
+              (warp_mma_k + 1) * Detail::kAccessesPerGroupB0;
+          group_start_iteration_B1 =
+              (warp_mma_k + 1) * Detail::kAccessesPerGroupB1;
 
-          copy_tiles_and_advance(iterator_A0, iterator_A1, iterator_B0, iterator_B1, group_start_iteration_A, 
-                               group_start_iteration_B);
+          copy_tiles_and_advance(iterator_A0, iterator_A1, iterator_B0, iterator_B1, group_start_iteration_A0, group_start_iteration_A1, group_start_iteration_B0, group_start_iteration_B1);
 
           // Inserts a memory fence between stages of cp.async instructions.
           cutlass::arch::cp_async_fence();
