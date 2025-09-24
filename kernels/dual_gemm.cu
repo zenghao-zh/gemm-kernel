@@ -55,8 +55,8 @@ D2 = element_wise(D0, D1)
 #include "cutlass/util/reference/host/tensor_compare.h"
 #include "cutlass/util/reference/host/gemm.h"
 
-#include "dual_gemm_device.h"
-#include "left_silu_and_mul.h"
+#include "device/dual_gemm.h"
+#include "thread/left_silu_and_mul.h"
 #include "dual_gemm_run.h"
 #include "test_run.h"
 
@@ -220,11 +220,14 @@ bool run_fused_gemm_f16_sm80_shmem() {
   constexpr bool kStoreD1 = true;
 
   using DualGemm = cutlass::gemm::device::DualGemm<
-    ElementOperandA,
-    cutlass::layout::RowMajor,
-    ElementOperandB,
-    cutlass::layout::ColumnMajor,
-    cutlass::layout::ColumnMajor,
+    ElementOperandA,        // ElementA0
+    cutlass::layout::RowMajor,  // LayoutA0
+    ElementOperandA,        // ElementA1 
+    cutlass::layout::RowMajor,  // LayoutA1
+    ElementOperandB,        // ElementB0
+    cutlass::layout::ColumnMajor,  // LayoutB0
+    ElementOperandB,        // ElementB1
+    cutlass::layout::ColumnMajor,  // LayoutB1
     ElementOutput,
     cutlass::layout::RowMajor,
     ElementAccumulator,
@@ -273,11 +276,14 @@ bool run_batched_fused_gemm_f16_sm80_shmem() {
   constexpr bool kStoreD1 = true;
 
   using DualGemm = cutlass::gemm::device::DualGemm<
-    ElementOperandA,
-    cutlass::layout::RowMajor,
-    ElementOperandB,
-    cutlass::layout::ColumnMajor,
-    cutlass::layout::ColumnMajor,
+    ElementOperandA,        // ElementA0
+    cutlass::layout::RowMajor,  // LayoutA0
+    ElementOperandA,        // ElementA1 
+    cutlass::layout::RowMajor,  // LayoutA1
+    ElementOperandB,        // ElementB0
+    cutlass::layout::ColumnMajor,  // LayoutB0
+    ElementOperandB,        // ElementB1
+    cutlass::layout::ColumnMajor,  // LayoutB1
     ElementOutput,
     cutlass::layout::RowMajor,
     ElementAccumulator,
@@ -329,12 +335,14 @@ bool run_broadcast_fused_gemm_f16_sm80_shmem() {
   constexpr bool kStoreD1 = true;
 
   using DualGemm = cutlass::gemm::device::DualGemm<
-    ElementOperandA,
-    cutlass::layout::RowMajor,
-    ElementOperandB,
-    // different LayoutB0 and B1
-    cutlass::layout::RowMajor,
-    cutlass::layout::ColumnMajor,
+    ElementOperandA,        // ElementA0
+    cutlass::layout::RowMajor,  // LayoutA0
+    ElementOperandA,        // ElementA1 
+    cutlass::layout::RowMajor,  // LayoutA1
+    ElementOperandB,        // ElementB0
+    cutlass::layout::RowMajor,  // LayoutB0 - different layouts
+    ElementOperandB,        // ElementB1
+    cutlass::layout::ColumnMajor,  // LayoutB1
     ElementOutput,
     cutlass::layout::RowMajor,
     ElementAccumulator,
@@ -386,12 +394,14 @@ bool run_batched_broadcast_fused_gemm_f16_sm80_shmem() {
   constexpr bool kStoreD1 = true;
 
   using DualGemm = cutlass::gemm::device::DualGemm<
-    ElementOperandA,
-    cutlass::layout::RowMajor,
-    ElementOperandB,
-    // different LayoutB0 and B1
-    cutlass::layout::RowMajor,
-    cutlass::layout::ColumnMajor,
+    ElementOperandA,        // ElementA0
+    cutlass::layout::RowMajor,  // LayoutA0
+    ElementOperandA,        // ElementA1 
+    cutlass::layout::RowMajor,  // LayoutA1
+    ElementOperandB,        // ElementB0
+    cutlass::layout::RowMajor,  // LayoutB0 - different layouts
+    ElementOperandB,        // ElementB1
+    cutlass::layout::ColumnMajor,  // LayoutB1
     ElementOutput,
     cutlass::layout::RowMajor,
     ElementAccumulator,

@@ -98,10 +98,11 @@ class DualMmaBase {
   /// Number of stages
   static int const kStages = Stages;
 
-  /// Tensor reference to the A operand
-  using TensorRefA = TensorRef<typename Operator0::ElementA, typename Operator0::LayoutA>;
+  /// Tensor reference to the A operands
+  using TensorRefA0 = TensorRef<typename Operator0::ElementA, typename Operator0::LayoutA>;
+  using TensorRefA1 = TensorRef<typename Operator1::ElementA, typename Operator1::LayoutA>;
 
-  /// Tensor reference to the B operand
+  /// Tensor reference to the B operands
   using TensorRefB0 = TensorRef<typename Operator0::ElementB, typename Operator0::LayoutB>;
   using TensorRefB1 = TensorRef<typename Operator1::ElementB, typename Operator1::LayoutB>;
 
@@ -123,10 +124,13 @@ class DualMmaBase {
     // Type definitions
     //
 
-    /// Shape of the A matrix operand in shared memory
-    using ShapeA = MatrixShape<Shape::kM + Policy0::SmemPaddingA::kRow,
-                               Shape::kK * kStages +
-                                   Policy0::SmemPaddingA::kColumn>;
+    /// Shape of the A matrix operands in shared memory
+    using ShapeA0 = MatrixShape<Shape::kM + Policy0::SmemPaddingA::kRow,
+                                Shape::kK * kStages +
+                                    Policy0::SmemPaddingA::kColumn>;
+    using ShapeA1 = MatrixShape<Shape::kM + Policy1::SmemPaddingA::kRow,
+                                Shape::kK * kStages +
+                                    Policy1::SmemPaddingA::kColumn>;
 
     /// Shape of the B matrix operand in shared memory
     using ShapeB0 =
@@ -141,8 +145,9 @@ class DualMmaBase {
     // Data members
     //
 
-    /// Buffer for A operand
-    AlignedBuffer<typename Operator0::ElementA, ShapeA::kCount> operand_A;
+    /// Buffer for A operands
+    AlignedBuffer<typename Operator0::ElementA, ShapeA0::kCount> operand_A0;
+    AlignedBuffer<typename Operator1::ElementA, ShapeA1::kCount> operand_A1;
 
     /// Buffer for B operand
     AlignedBuffer<typename Operator0::ElementB, ShapeB0::kCount> operand_B0;
@@ -154,10 +159,15 @@ class DualMmaBase {
     // Methods
     //
 
-    /// Returns a layout object for the A matrix
+    /// Returns a layout object for the A matrices
     CUTLASS_DEVICE
-    static typename Operator0::LayoutA LayoutA() {
-      return Operator0::LayoutA::packed({ShapeA::kRow, ShapeA::kColumn});
+    static typename Operator0::LayoutA LayoutA0() {
+      return Operator0::LayoutA::packed({ShapeA0::kRow, ShapeA0::kColumn});
+    }
+
+    CUTLASS_DEVICE
+    static typename Operator1::LayoutA LayoutA1() {
+      return Operator1::LayoutA::packed({ShapeA1::kRow, ShapeA1::kColumn});
     }
 
     /// Returns a layout object for the B matrix
@@ -172,10 +182,15 @@ class DualMmaBase {
       return Operator1::LayoutB::packed({ShapeB1::kRow, ShapeB1::kColumn});
     }
 
-    /// Returns a TensorRef to the A operand
+    /// Returns a TensorRef to the A operands
     CUTLASS_HOST_DEVICE
-    TensorRefA operand_A_ref() {
-      return TensorRefA{operand_A.data(), LayoutA()};
+    TensorRefA0 operand_A0_ref() {
+      return TensorRefA0{operand_A0.data(), LayoutA0()};
+    }
+
+    CUTLASS_HOST_DEVICE
+    TensorRefA1 operand_A1_ref() {
+      return TensorRefA1{operand_A1.data(), LayoutA1()};
     }
 
     /// Returns a TensorRef to the B operand
@@ -195,8 +210,9 @@ class DualMmaBase {
   // Data members
   //
 
-  /// Iterator to load a warp-scoped tile of A operand from shared memory
-  typename Operator0::IteratorA warp_tile_iterator_A_;
+  /// Iterator to load a warp-scoped tile of A operands from shared memory
+  typename Operator0::IteratorA warp_tile_iterator_A0_;
+  typename Operator1::IteratorA warp_tile_iterator_A1_;
 
   /// Iterator to load a warp-scoped tile of B operand from shared memory
   typename Operator0::IteratorB warp_tile_iterator_B0_;
@@ -216,7 +232,8 @@ public:
       ///< ID of each thread within a warp
       int lane_idx
     ):
-      warp_tile_iterator_A_(shared_storage.operand_A_ref(), lane_idx),
+      warp_tile_iterator_A0_(shared_storage.operand_A0_ref(), lane_idx),
+      warp_tile_iterator_A1_(shared_storage.operand_A1_ref(), lane_idx),
       warp_tile_iterator_B0_(shared_storage.operand_B0_ref(), lane_idx),
       warp_tile_iterator_B1_(shared_storage.operand_B1_ref(), lane_idx) {
 

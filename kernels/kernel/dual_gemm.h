@@ -40,9 +40,9 @@
 #include "cutlass/matrix_coord.h"
 #include "cutlass/semaphore.h"
 
-#include "dual_mma_multistage.h"
-#include "dual_epilogue.h"
-#include "dual_gemm_common.h"
+#include "../threadblock/dual_mma_multistage.h"
+#include "../threadblock/dual_epilogue.h"
+#include "../dual_gemm_common.h"
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -93,8 +93,10 @@ struct DualGemm {
       true // IterationsUnroll
   >;
 
-  using ElementA = typename DualMma::IteratorA::Element;
-  using ElementB = typename DualMma::IteratorB0::Element;
+  using ElementA0 = typename DualMma::IteratorA0::Element;
+  using ElementA1 = typename DualMma::IteratorA1::Element;
+  using ElementB0 = typename DualMma::IteratorB0::Element;
+  using ElementB1 = typename DualMma::IteratorB1::Element;
   using ElementC = typename DualEpilogue::OutputTileIterator::Element;
 
   static bool const kSplitKSerial = SplitKSerial;
@@ -113,8 +115,11 @@ struct DualGemm {
     int swizzle_log_tile;
 
     // Mma0
-    typename DualMma::IteratorA::Params params_A0;
-    typename DualMma::IteratorA::TensorRef ref_A0;
+    typename DualMma::IteratorA0::Params params_A0;
+    typename DualMma::IteratorA0::TensorRef ref_A0;
+    // Mma1 - A1
+    typename DualMma::IteratorA1::Params params_A1;
+    typename DualMma::IteratorA1::TensorRef ref_A1;
     typename DualMma::IteratorB0::Params params_B0;
     typename DualMma::IteratorB0::TensorRef ref_B0;
     typename Epilogue0::OutputTileIterator::Params params_C0;
@@ -139,7 +144,8 @@ struct DualGemm {
     int *semaphore;
     int gemm_k_size;
 
-    int64_t batch_stride_A;
+    int64_t batch_stride_A0;
+    int64_t batch_stride_A1;
     int64_t batch_stride_B0;
     int64_t batch_stride_B1;
     int64_t batch_stride_C;
@@ -157,12 +163,13 @@ struct DualGemm {
       DualGemmMode mode,
       cutlass::gemm::GemmCoord const & problem_size,
       cutlass::gemm::GemmCoord const & grid_tiled_shape,
-      // Mma0: D0 = A @ B0 + C0
-      typename DualMma::IteratorA::TensorRef ref_A0,
+      // Mma0: D0 = A0 @ B0 + C0  
+      typename DualMma::IteratorA0::TensorRef ref_A0,
+      // Mma1: D1 = A1 @ B1 + C1
+      typename DualMma::IteratorA1::TensorRef ref_A1,
       typename DualMma::IteratorB0::TensorRef ref_B0,
       typename Epilogue0::OutputTileIterator::TensorRef ref_C0,
       typename Epilogue0::OutputTileIterator::TensorRef ref_D0,
-      // Mma1: D1 = A @ B1 + C1
       typename DualMma::IteratorB1::TensorRef ref_B1,
       typename Epilogue1::OutputTileIterator::TensorRef ref_C1,
       typename Epilogue1::OutputTileIterator::TensorRef ref_D1,
@@ -172,7 +179,8 @@ struct DualGemm {
       typename OutputOp1::Params output_op_1 = typename OutputOp1::Params(),
       typename OutputOp2::Params output_op_2 = typename OutputOp2::Params(),
       int *workspace = nullptr,
-      int64_t batch_stride_A = 1,
+      int64_t batch_stride_A0 = 1,
+      int64_t batch_stride_A1 = 1,
       int64_t batch_stride_B0 = 1,
       int64_t batch_stride_B1 = 1,
       int64_t batch_stride_C = 1,
@@ -185,6 +193,9 @@ struct DualGemm {
       // Mma0
       params_A0(ref_A0.layout()),
       ref_A0(ref_A0),
+      // Mma1 - A1
+      params_A1(ref_A1.layout()),
+      ref_A1(ref_A1),
       params_B0(ref_B0.layout()),
       ref_B0(ref_B0),
       params_C0(ref_C0.layout()),
@@ -203,7 +214,8 @@ struct DualGemm {
       output_op_0(output_op_0),
       output_op_1(output_op_1),
       output_op_2(output_op_2),
-      batch_stride_A(batch_stride_A),
+      batch_stride_A0(batch_stride_A0),
+      batch_stride_A1(batch_stride_A1),
       batch_stride_B0(batch_stride_B0),
       batch_stride_B1(batch_stride_B1),
       batch_stride_C(batch_stride_C),
@@ -233,7 +245,8 @@ struct DualGemm {
   /// Determines whether kernel satisfies alignment
     static Status can_implement(
       cutlass::gemm::GemmCoord const & problem_size,
-      typename DualMma::IteratorA::TensorRef ref_A0,
+      typename DualMma::IteratorA0::TensorRef ref_A0,
+      typename DualMma::IteratorA1::TensorRef ref_A1,
       typename DualMma::IteratorB0::TensorRef ref_B0,
       typename Epilogue0::OutputTileIterator::TensorRef ref_C0,
       typename Epilogue0::OutputTileIterator::TensorRef ref_D0,
@@ -242,15 +255,21 @@ struct DualGemm {
       typename Epilogue1::OutputTileIterator::TensorRef ref_D1,
       typename Epilogue1::OutputTileIterator::TensorRef ref_D2) {
 
-    static int const kAlignmentA = DualMma::IteratorA::AccessType::kElements;
-    static int const kAlignmentB = DualMma::IteratorB0::AccessType::kElements;
+    static int const kAlignmentA0 = DualMma::IteratorA0::AccessType::kElements;
+    static int const kAlignmentA1 = DualMma::IteratorA1::AccessType::kElements;
+    static int const kAlignmentB0 = DualMma::IteratorB0::AccessType::kElements;
+    static int const kAlignmentB1 = DualMma::IteratorB1::AccessType::kElements;
     static int const kAlignmentC = Epilogue0::OutputTileIterator::kElementsPerAccess;
 
-    if (!TensorRef_aligned(ref_A0, kAlignmentA)) {
+    if (!TensorRef_aligned(ref_A0, kAlignmentA0)) {
       return Status::kErrorMisalignedOperand;
     }
 
-    if (!TensorRef_aligned(ref_B0, kAlignmentB)) {
+    if (!TensorRef_aligned(ref_A1, kAlignmentA1)) {
+      return Status::kErrorMisalignedOperand;
+    }
+
+    if (!TensorRef_aligned(ref_B0, kAlignmentB0)) {
       return Status::kErrorMisalignedOperand;
     }
 
@@ -262,7 +281,7 @@ struct DualGemm {
       return Status::kErrorMisalignedOperand;
     }
 
-    if (!TensorRef_aligned(ref_B1, kAlignmentB)) {
+    if (!TensorRef_aligned(ref_B1, kAlignmentB1)) {
       return Status::kErrorMisalignedOperand;
     }
 
@@ -300,9 +319,10 @@ struct DualGemm {
     int offset_k = 0;
     int problem_size_k = params.problem_size.k();
 
-    ElementA *ptr_A0 = static_cast<ElementA *>(params.ref_A0.data());
-    ElementB *ptr_B0 = static_cast<ElementB *>(params.ref_B0.data());
-    ElementB *ptr_B1 = static_cast<ElementB *>(params.ref_B1.data());
+    ElementA0 *ptr_A0 = static_cast<ElementA0 *>(params.ref_A0.data());
+    ElementA1 *ptr_A1 = static_cast<ElementA1 *>(params.ref_A1.data());
+    ElementB0 *ptr_B0 = static_cast<ElementB0 *>(params.ref_B0.data());
+    ElementB1 *ptr_B1 = static_cast<ElementB1 *>(params.ref_B1.data());
 
     //
     // Fetch pointers based on mode.
@@ -315,13 +335,19 @@ struct DualGemm {
       offset_k = threadblock_tile_offset.k() * params.gemm_k_size;
     }
     else if (params.mode == DualGemmMode::kBatched) {
-      ptr_A0 += threadblock_tile_offset.k() * params.batch_stride_A;
+      ptr_A0 += threadblock_tile_offset.k() * params.batch_stride_A0;
+      ptr_A1 += threadblock_tile_offset.k() * params.batch_stride_A1;
       ptr_B0 += threadblock_tile_offset.k() * params.batch_stride_B0;
       ptr_B1 += threadblock_tile_offset.k() * params.batch_stride_B1;
     }
 
     // Compute initial location in logical coordinates
     cutlass::MatrixCoord tb_offset_A0{
+      threadblock_tile_offset.m() * DualMma::Shape::kM,
+      offset_k,
+    };
+
+    cutlass::MatrixCoord tb_offset_A1{
       threadblock_tile_offset.m() * DualMma::Shape::kM,
       offset_k,
     };
@@ -340,12 +366,19 @@ struct DualGemm {
     int thread_idx = threadIdx.x;
 
     // Construct iterators to A and B operands
-    typename DualMma::IteratorA iterator_A0(
+    typename DualMma::IteratorA0 iterator_A0(
       params.params_A0,
       ptr_A0,
       {params.problem_size.m(), problem_size_k},
       thread_idx,
       tb_offset_A0);
+
+    typename DualMma::IteratorA1 iterator_A1(
+      params.params_A1,
+      ptr_A1,
+      {params.problem_size.m(), problem_size_k},
+      thread_idx,
+      tb_offset_A1);
 
     typename DualMma::IteratorB0 iterator_B0(
       params.params_B0,
@@ -386,7 +419,7 @@ struct DualGemm {
       // Compute threadblock-scoped matrix multiply-add
       mma(gemm_k_iterations,
         accum0, accum1,
-        iterator_A0, iterator_B0, iterator_B1,
+        iterator_A0, iterator_A1, iterator_B0, iterator_B1,
         accum0, accum1);
     }
 
@@ -538,3 +571,8 @@ struct DualGemm {
 };
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
+
+} // namespace kernel
+} // namespace gemm
+} // namespace cutlass
+
